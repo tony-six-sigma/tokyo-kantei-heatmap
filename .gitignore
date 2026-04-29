@@ -18,3 +18,12 @@ venv/
 
 # Build scratch
 *.tmp
+
+# Local annotation overlay — copy picks.example.json → picks.json,
+# fill in your own picks, and build_html.py will render orange rings.
+# Never committed.
+data/picks.json
+
+# Built artifact (varies based on whether picks.json is present locally).
+# Rebuild with `python3 src/build_html.py`.
+kantei.html

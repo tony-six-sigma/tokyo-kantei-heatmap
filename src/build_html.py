@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parent.parent
 with (ROOT / "data" / "merged.json").open(encoding="utf-8") as f:
     rows = json.load(f)
 
+# Optional local-only annotation overlay. If data/picks.json exists, render
+# orange rings on top of the heatmap. The file is gitignored — picks stay
+# local. See data/picks.example.json for the schema.
+picks_path = ROOT / "data" / "picks.json"
+picks = json.loads(picks_path.read_text(encoding="utf-8")) if picks_path.exists() else []
+
 # Patch the 6 unmatched coords manually
 manual_coords = {
     ("東京メトロ副都心線", "明治神宮前"): (35.6688, 139.7058),
@@ -34,6 +40,7 @@ print(f"Located: {len(located)}")
 
 # Embed data as JSON in HTML
 data_json = json.dumps(located, ensure_ascii=False, separators=(',', ':'))
+picks_json = json.dumps(picks, ensure_ascii=False, separators=(',', ':'))
 
 html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -139,6 +146,7 @@ html = f"""<!DOCTYPE html>
 
 <script>
 const DATA = {data_json};
+const PICKS = {picks_json};
 
 // Color scale (divergent)
 function colorFor(v) {{
@@ -188,6 +196,15 @@ legend.addTo(map);
 
 // Markers layer
 let markerLayer = L.layerGroup().addTo(map);
+
+// Picks overlay (only renders if data/picks.json was present at build time)
+PICKS.forEach(p => {{
+  L.circleMarker([p.lat, p.lon], {{
+    radius: 14, color: '#ff6b00', weight: 3, fillOpacity: 0,
+    interactive: true
+  }}).bindTooltip(p.label, {{ permanent: false, direction: 'top' }})
+    .addTo(map);
+}});
 
 // Populate line filter
 const allLines = [...new Set(DATA.map(r => r.line))].sort();

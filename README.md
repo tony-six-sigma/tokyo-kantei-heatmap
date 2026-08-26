@@ -1,10 +1,11 @@
 # tokyo-kantei-heatmap
 
 Interactive Tokyo capital-gains heatmap built from Tokyo Kantei's
-**沿線・駅別中古マンション平均坪単価** reports. Plots ~436 stations across 42
+**沿線・駅別中古マンション平均坪単価** reports. Plots 584 stations across 61
 Tokyo-area train lines, color-coded by 1-year YoY ¥/坪 change and sized by
 sub-¥100M affordability — meant for spotting which areas are still going up
-and which have rolled over.
+and which have rolled over. Each station row carries the publication vintage
+of its line's Kantei report (shown in popup + table).
 
 **Live deployment:** https://web-tony-six-sigmas-projects.vercel.app/kantei.html
 
@@ -16,21 +17,22 @@ and which have rolled over.
 
 ```
 .
-├── kantei.html               # Built dashboard (single self-contained file)
+├── kantei.html               # Built dashboard (gitignored build artifact)
 ├── src/
 │   ├── fetch_reports.py       # Step 1: download Kantei HTMLs + table PNGs
 │   ├── fetch_osm_stations.py  # Step 2: cache Tokyo station coords from OSM
-│   ├── analysis.py            # Step 3: structured price data + ranking
+│   ├── analysis.py            # Step 3: structured price data (DATA + VINTAGE)
+│   ├── apply_update.py        # Step 3b: merge transcribed report JSON into analysis.py
 │   ├── build_merged.py        # Step 4: join price data ↔ coords
 │   └── build_html.py          # Step 5: render Leaflet/HTML dashboard
 ├── data/
-│   ├── urls.txt               # 74 line-report IDs Kantei publishes
-│   ├── merged.json            # Joined 436-station dataset (built artifact)
-│   ├── osm_stations.json      # OSM Tokyo stations cache (~1200 nodes)
+│   ├── urls.txt               # line-report IDs Kantei publishes
+│   ├── merged.json            # Joined 584-station dataset (built artifact)
+│   ├── osm_stations.json      # OSM station cache (~1600 nodes, wide bbox)
 │   ├── overpass_query.txt     # Reproduces the OSM query
 │   └── image_urls.tsv         # PNG paths discovered on each report page
-├── reports/                   # Cached Kantei HTML reports (74 files)
-└── images/                    # Cached Kantei data-table PNGs (74 files)
+├── reports/                   # Cached Kantei HTML reports
+└── images/                    # Cached Kantei data-table PNGs (canonical source)
 ```
 
 ## Pipeline
@@ -47,29 +49,33 @@ build_merged.py      → joins prices ↔ coords → data/merged.json
 build_html.py        → renders kantei.html
 ```
 
-The "manual" step is unavoidable: Kantei publishes the per-station tables as
-**raster images, not text**. There's no API, no CSV, no embedded JSON.
+The transcription step is unavoidable: Kantei publishes the per-station tables
+as **raster images, not text**. There's no API, no CSV, no embedded JSON.
 Extraction requires either Claude vision (what was used here) or a Japanese
-OCR pipeline like PaddleOCR/Tesseract. The 436 station rows in
-`src/analysis.py` were transcribed from the PNG images in `images/`.
+OCR pipeline like PaddleOCR/Tesseract. The 584 station rows in
+`src/analysis.py` were transcribed from the PNG images in `images/` —
+each image read by two independent vision agents with cell-level
+reconciliation (2026-08 refresh: 20/20 images clean consensus).
 
-If Kantei refreshes a line, refetch its report and re-transcribe just the new
-table — most stations and lines stay stable.
+To merge a new batch of refreshed reports: transcribe them into the JSON
+shape documented in `src/apply_update.py`, then run
+`python3 src/apply_update.py update.json` — it replaces superseded line
+keys, records per-line vintage, and rewrites `analysis.py` in place.
 
 ## Data caveats (read these before drawing conclusions)
 
 1. **Vintage isn't uniform.** Kantei publishes one line per week and rotates
-   over ~24 months. As of this build:
-   - 東急 lines (東横, 田園都市, 池上, 大井町, 目黒, 多摩川): 2026-03 to 2026-04
-   - 京急 lines: 2026-02
-   - 山手, 中央, 京浜東北②, メトロ, 都営: mid-to-late 2025
-   - **京王, 京王井の頭, 小田急, 西武, 中央①②, 埼京: 2024-06 to 2024-09 (still latest)**
+   over ~24 months. As of the 2026-08 refresh:
+   - 京王 / 井の頭 / 小田急 / 中央 / 青梅 / 江ノ島 / 多摩 / 西武新宿① / 東急目黒・多摩川:
+     **2026-05 to 2026-08 (fresh)**
+   - 東急 (東横, 田園都市, 池上, 大井町, 世田谷): 2026-03 to 2026-04
+   - 京急①②③: 2026-02 · 京浜東北①②/根岸: 2025-11
+   - 山手, メトロ, 都営, 総武, つくば: 2025
+   - 埼京, 東武, 西武池袋: 2024 (oldest remaining)
 
-   So a station's "1-yr YoY" depends on when Kantei sampled — comparing a
-   2026-04 reading on 田園都市 against a 2024-08 reading on 京王 is comparing
-   different points in the cycle. The dashboard surfaces this implicitly via
-   the *line* label; treat absolute-growth comparisons across vintages with
-   appropriate skepticism.
+   Every station row now carries its line's vintage (`VINTAGE` in
+   analysis.py, surfaced in the dashboard popup and table). Treat
+   absolute-growth comparisons across vintages with appropriate skepticism.
 
 2. **Asking, not closing.** Kantei aggregates 売り希望価格 (asking prices). In a
    softening market, asking lags closing by 3–6 months.

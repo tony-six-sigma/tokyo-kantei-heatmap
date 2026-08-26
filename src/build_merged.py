@@ -12,7 +12,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+import analysis  # noqa: E402
 from analysis import DATA  # noqa: E402
+
+VINTAGE = getattr(analysis, "VINTAGE", {})
 
 OSM_PATH = ROOT / "data" / "osm_stations.json"
 OUT_PATH = ROOT / "data" / "merged.json"
@@ -87,6 +90,7 @@ def main() -> None:
                     "p_now": p,
                     "p_1y": p1,
                     "p_2y": p2,
+                    "vintage": VINTAGE.get(line, "?"),
                     "yoy_1": yoy_1,
                     "yoy_2": yoy_2,
                     "cagr_2": cagr,

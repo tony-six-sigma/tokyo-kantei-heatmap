@@ -41,6 +41,7 @@ print(f"Located: {len(located)}")
 # Embed data as JSON in HTML
 data_json = json.dumps(located, ensure_ascii=False, separators=(',', ':'))
 picks_json = json.dumps(picks, ensure_ascii=False, separators=(',', ':'))
+n_lines = len({r["line"] for r in located})
 
 html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -92,8 +93,8 @@ html = f"""<!DOCTYPE html>
 
 <header>
   <h1>Tokyo Capital-Gains Heatmap</h1>
-  <div class="sub">Kantei 沿線・駅別 data — {len(located)} stations across 42 Tokyo-area lines.
-    Color = 1-yr YoY ¥/坪 change. Size = sub-¥100M affordability.</div>
+  <div class="sub">Kantei 沿線・駅別 data — {len(located)} stations across {n_lines} Tokyo-area lines (updated 2026-08).
+    Color = 1-yr YoY ¥/坪 change. Size = sub-¥100M affordability. Per-station data vintage in popup/table — lines refresh on a ~2yr rotation.</div>
 </header>
 
 <div class="controls">
@@ -138,6 +139,7 @@ html = f"""<!DOCTYPE html>
         <th data-sort="max_sqm_100m">Max㎡ @¥100M</th>
         <th data-sort="avg_sqm">avg㎡</th>
         <th data-sort="avg_age">築年</th>
+        <th data-sort="vintage">Data vintage</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -235,6 +237,7 @@ function popup(r) {{
     <div class="row"><span>Max ㎡ at ¥100M</span><b>${{fmt(r.max_sqm_100m, 1)}}㎡</b></div>
     <div class="row"><span>avg unit ㎡</span>${{fmt(r.avg_sqm, 1)}}</div>
     <div class="row"><span>avg 築年</span>${{fmt(r.avg_age, 1)}} yr</div>
+    <div class="row"><span>data vintage</span><span style="color:#666">${{r.vintage || '?'}}</span></div>
   </div>`;
 }}
 
@@ -305,6 +308,7 @@ function renderTable(rows) {{
       <td>${{fmt(r.max_sqm_100m, 0)}}</td>
       <td>${{fmt(r.avg_sqm, 1)}}</td>
       <td>${{fmt(r.avg_age, 1)}}</td>
+      <td style="color:#666">${{r.vintage || '?'}}</td>
     </tr>`;
   }}).join('');
 

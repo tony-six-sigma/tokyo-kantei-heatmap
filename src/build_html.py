@@ -24,6 +24,12 @@ with (ROOT / "data" / "merged.json").open(encoding="utf-8") as f:
 # orange rings on top of the heatmap. The file is gitignored — picks stay
 # local. See data/picks.example.json for the schema.
 picks_path = ROOT / "data" / "picks.json"
+
+# Basemap: CARTO Voyager (the original look) when a key is available, else keyless 地理院タイル.
+# CARTO keys are free by email (carto.com/basemaps) and end up in the page's tile URLs anyway;
+# data/carto_key.txt is gitignored so the key isn't committed.
+key_path = ROOT / "data" / "carto_key.txt"
+carto_key = key_path.read_text(encoding="utf-8").strip() if key_path.exists() else ""
 picks = json.loads(picks_path.read_text(encoding="utf-8")) if picks_path.exists() and not args.public else []
 
 # Patch the 6 unmatched coords manually
@@ -82,11 +88,42 @@ for r in located:
             break
 print(f"Tokyo risk: {len(towns)} 町丁目, {sum(1 for r in located if 'town' in r)} stations tagged")
 
+# Optional rent layer (src/fetch_rents.py): SUUMO マンション 1R asking rent now vs ~1 year ago.
+# gap = rent growth minus price growth; positive means rents are outpacing prices. Only computed where
+# Kantei's price vintage is late 2025 or newer, so both changes cover roughly the same year.
+rents_path = ROOT / "data" / "station_rents.json"
+rents = json.loads(rents_path.read_text(encoding="utf-8")) if rents_path.exists() else {"meta": {}, "stations": {}}
+for r in located:
+    v = rents["stations"].get(f'{r["line"]}|{r["station"]}')
+    if v:
+        r["rent"], r["rent_then"], r["rent_then_date"], r["rent_chg"] = v
+        if v[3] is not None and r.get("yoy_1") is not None and (r.get("vintage") or "") >= "2025-10":
+            r["gap"] = round(v[3] - r["yoy_1"], 1)
+rent_date = rents["meta"].get("scraped", "")
+print(f"Rents: {sum(1 for r in located if 'rent' in r)} stations, {sum(1 for r in located if 'gap' in r)} with rent vs price gap")
+
 # Embed data as JSON in HTML
 data_json = json.dumps(located, ensure_ascii=False, separators=(',', ':'))
 towns_json = json.dumps(towns, ensure_ascii=False, separators=(',', ':'))
 picks_json = json.dumps(picks, ensure_ascii=False, separators=(',', ':'))
 n_lines = len({r["line"] for r in located})
+
+if carto_key:
+    basemap_js = f"""// Init map (CARTO Voyager; CARTO requires a key since 2026, keyless tiles are watermarked)
+const map = L.map('map', {{ preferCanvas: true, maxZoom: 19 }}).setView([35.685, 139.71], 11);
+L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png?key={carto_key}', {{
+  attribution: '© OpenStreetMap contributors © CARTO',
+  subdomains: 'abcd', maxZoom: 19
+}}).addTo(map);"""
+else:
+    basemap_js = """// Init map. Basemap: 国土地理院 淡色地図, keyless (credit only, no application for real-time use:
+// https://maps.gsi.go.jp/development/ichiran.html). Zoom 9-18 stays in the range where the
+// 地理院タイル credit alone is enough. Add data/carto_key.txt to switch to CARTO Voyager.
+const map = L.map('map', { preferCanvas: true, minZoom: 9, maxZoom: 18 }).setView([35.685, 139.71], 11);
+L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
+  attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a> (国土地理院)',
+  minZoom: 9, maxZoom: 18
+}).addTo(map);"""
 
 html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -151,6 +188,7 @@ html = f"""<!DOCTYPE html>
   <h1>Tokyo Capital-Gains Heatmap</h1>
   <div class="sub">Kantei 沿線・駅別 data — {len(located)} stations across {n_lines} Tokyo-area lines (updated 2026-08).
     Color = 1-yr YoY ¥/坪 change. Size = sub-¥100M affordability. Per-station data vintage in popup/table — lines refresh on a ~2yr rotation.
+    Rent metrics: SUUMO マンション ワンルーム asking rent ({rent_date}) vs an archived copy from about a year earlier; positive "rent − price" means rents are outpacing prices (shown only where Kantei's price data is late-2025 or newer, so both cover about the same year).
     Hazard overlays: MLIT flood maps, J-SHIS earthquake shaking probability, Tokyo 地域危険度 (第9回) ranks; click the map for a 町丁目's ranks.</div>
 </header>
 
@@ -160,6 +198,8 @@ html = f"""<!DOCTYPE html>
       <option value="yoy_1">1-yr YoY %</option>
       <option value="yoy_2">2-yr cumulative %</option>
       <option value="cagr_2">2-yr CAGR %</option>
+      <option value="rent_chg">Rent change %/yr (SUUMO 1R)</option>
+      <option value="gap">Rent growth − price growth (pts)</option>
     </select>
   </span>
   <span><label>Affordability:</label>
@@ -217,6 +257,9 @@ html = f"""<!DOCTYPE html>
         <th data-sort="avg_sqm">avg㎡</th>
         <th data-sort="avg_age">築年</th>
         <th data-sort="vintage">Data vintage</th>
+        <th data-sort="rent" title="SUUMO マンション ワンルーム asking rent, 万円/month">Rent 1R</th>
+        <th data-sort="rent_chg" title="Rent change, % per year">Rent %/yr</th>
+        <th data-sort="gap" title="Rent growth minus 1-yr price growth, percentage points">Rent−price</th>
         <th data-sort="r_col" title="Tokyo 地域危険度 building collapse rank, 1 low to 5 high">倒壊</th>
         <th data-sort="r_fire" title="Tokyo 地域危険度 fire spread rank, 1 low to 5 high">火災</th>
       </tr>
@@ -230,17 +273,21 @@ const DATA = {data_json};
 const PICKS = {picks_json};
 const TOWNS = {towns_json};  // [label, collapse rank, fire rank, overall rank, [delta-encoded rings]]
 
-// Color scale (divergent)
-function colorFor(v) {{
+// Color scales (divergent). Rent moves less than prices, so it gets tighter bands.
+const PALETTE = ["#67000d", "#d73027", "#fc8d59", "#fee08b", "#d9ef8b", "#91cf60", "#1a9850", "#006837"];
+const SCALES = {{
+  price:    {{ cuts: [-15, -7, -2, 2, 8, 18, 30], unit: '%' }},
+  rent_chg: {{ cuts: [-6, -3, -1, 1, 3, 6, 10], unit: '%' }},
+  gap:      {{ cuts: [-25, -15, -8, -2, 2, 6, 12], unit: ' pts' }},
+}};
+const LEGEND_TITLES = {{ yoy_1: '1-yr YoY ¥/坪', yoy_2: '2-yr cumulative ¥/坪', cagr_2: '2-yr CAGR ¥/坪',
+  rent_chg: 'Rent change %/yr (1R)', gap: 'Rent growth − price growth' }};
+const scaleFor = m => SCALES[m] || SCALES.price;
+function colorFor(v, metric) {{
   if (v == null || isNaN(v)) return "#999";
-  if (v <= -15) return "#67000d";
-  if (v <= -7)  return "#d73027";
-  if (v <= -2)  return "#fc8d59";
-  if (v <= 2)   return "#fee08b";
-  if (v <= 8)   return "#d9ef8b";
-  if (v <= 18)  return "#91cf60";
-  if (v <= 30)  return "#1a9850";
-  return "#006837";
+  const cuts = scaleFor(metric).cuts;
+  for (let i = 0; i < cuts.length; i++) if (v <= cuts[i]) return PALETTE[i];
+  return PALETTE[cuts.length];
 }}
 
 // Marker radius by affordability
@@ -252,31 +299,25 @@ function radiusFor(p_now) {{
   return 4;
 }}
 
-// Init map. Basemap: 国土地理院 淡色地図, keyless (credit only, no application for real-time use:
-// https://maps.gsi.go.jp/development/ichiran.html). CARTO now requires an API key and watermarks
-// keyless tiles. Zoom 9-18 stays in the range where the 地理院タイル credit alone is enough.
-const map = L.map('map', {{ preferCanvas: true, minZoom: 9, maxZoom: 18 }}).setView([35.685, 139.71], 11);
-L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{{z}}/{{x}}/{{y}}.png', {{
-  attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a> (国土地理院)',
-  minZoom: 9, maxZoom: 18
-}}).addTo(map);
+{basemap_js}
 
-// Legend
+// Legend (rebuilt when the color metric changes)
 const legend = L.control({{ position: 'bottomright' }});
 legend.onAdd = function () {{
   const div = L.DomUtil.create('div', 'legend');
-  div.innerHTML = '<div><b>1-yr YoY ¥/坪</b></div>' +
-    '<div><span class="swatch" style="background:#006837"></span>≥ +30% (very hot)</div>' +
-    '<div><span class="swatch" style="background:#1a9850"></span>+18% to +30%</div>' +
-    '<div><span class="swatch" style="background:#91cf60"></span>+8% to +18%</div>' +
-    '<div><span class="swatch" style="background:#d9ef8b"></span>+2% to +8%</div>' +
-    '<div><span class="swatch" style="background:#fee08b"></span>−2% to +2% (flat)</div>' +
-    '<div><span class="swatch" style="background:#fc8d59"></span>−7% to −2%</div>' +
-    '<div><span class="swatch" style="background:#d73027"></span>−15% to −7%</div>' +
-    '<div><span class="swatch" style="background:#67000d"></span>≤ −15% (rolling over)</div>';
+  div.id = 'legend';
   return div;
 }};
 legend.addTo(map);
+function renderLegend(metric) {{
+  const {{ cuts, unit }} = scaleFor(metric), s = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + unit;
+  const rows = [`≥ ${{s(cuts[6])}}`];
+  for (let i = 6; i > 0; i--) rows.push(`${{s(cuts[i - 1])}} to ${{s(cuts[i])}}`);
+  rows.push(`≤ ${{s(cuts[0])}}`);
+  document.getElementById('legend').innerHTML = `<div><b>${{LEGEND_TITLES[metric]}}</b></div>` +
+    rows.map((t, i) => `<div><span class="swatch" style="background:${{PALETTE[7 - i]}}"></span>${{t}}</div>`).join('') +
+    `<div><span class="swatch" style="background:#999"></span>no data</div>`;
+}}
 
 // Hazard overlays. Raster tiles sit above the basemap, Tokyo rank polygons above the tiles,
 // station markers above both. Rank polygons are non-interactive so clicks reach the map.
@@ -449,6 +490,12 @@ function popup(r) {{
     <div class="row"><span>avg unit ㎡</span>${{fmt(r.avg_sqm, 1)}}</div>
     <div class="row"><span>avg 築年</span>${{fmt(r.avg_age, 1)}} yr</div>
     <div class="row"><span>data vintage</span><span style="color:#666">${{r.vintage || '?'}}</span></div>
+    ${{r.rent ? `<hr style="margin:6px 0;border:none;border-top:1px solid #eee">
+    <div style="color:#666;font-size:11px">Rent, SUUMO マンション ワンルーム (asking)</div>
+    <div class="row"><span>Now ({rent_date})</span><b>¥${{r.rent}}万</b></div>
+    ${{r.rent_then ? `<div class="row"><span>Then (${{r.rent_then_date}})</span><span>¥${{r.rent_then}}万</span></div>
+    <div class="row"><span>Rent change</span><span class="${{r.rent_chg >= 0 ? 'pos' : 'neg'}}">${{fmt(r.rent_chg, 1, true)}}%/yr</span></div>
+    <div class="row"><span>Rent − price growth</span><span class="${{r.gap >= 0 ? 'pos' : 'neg'}}">${{fmt(r.gap, 1, true)}} pts</span></div>` : ''}}` : ''}}
     ${{r.town ? `<hr style="margin:6px 0;border:none;border-top:1px solid #eee">
     <div style="color:#666;font-size:11px">Tokyo 地域危険度 · ${{r.town}} (1 low, 5 high)</div>
     <div class="row"><span>Building collapse</span><b>${{r.r_col}}/5</b></div>
@@ -484,21 +531,23 @@ function renderMap(rows) {{
     const v = r[metric];
     L.circleMarker([r.lat, r.lon], {{
       radius: radiusFor(r.p_now),
-      fillColor: colorFor(v),
+      fillColor: colorFor(v, metric),
       color: '#000', weight: 0.5, fillOpacity: 0.85
-    }}).bindTooltip(`<b>${{r.station}}</b> ${{fmt(v, 1, true)}}%`, {{ direction: 'top' }})
+    }}).bindTooltip(`<b>${{r.station}}</b> ${{fmt(v, 1, true)}}${{scaleFor(metric).unit}}`, {{ direction: 'top' }})
       .bindPopup(popup(r))
       .addTo(markerLayer);
   }});
   document.getElementById('counter').textContent = rows.length + ' stations';
 
-  // Stats
-  const yoy = rows.map(r => r.yoy_1).filter(v => v != null);
-  const up = yoy.filter(v => v > 0).length;
-  const down = yoy.filter(v => v < 0).length;
-  const median = yoy.length ? [...yoy].sort((a,b)=>a-b)[Math.floor(yoy.length/2)] : 0;
+  // Stats for the selected metric
+  const vals = rows.map(r => r[metric]).filter(v => v != null);
+  const up = vals.filter(v => v > 0).length;
+  const down = vals.filter(v => v < 0).length;
+  const median = vals.length ? [...vals].sort((a,b)=>a-b)[Math.floor(vals.length/2)] : 0;
   document.getElementById('stats').textContent =
-    `${{rows.length}} stations matched · 1-yr YoY: ${{up}} up / ${{down}} down · median ${{fmt(median, 1, true)}}%`;
+    `${{rows.length}} stations matched · ${{LEGEND_TITLES[metric]}}: ${{up}} up / ${{down}} down · median ${{fmt(median, 1, true)}}${{scaleFor(metric).unit}}` +
+    (vals.length < rows.length ? ` (${{rows.length - vals.length}} without data)` : '');
+  renderLegend(metric);
 }}
 
 function renderTable(rows) {{
@@ -525,6 +574,9 @@ function renderTable(rows) {{
       <td>${{fmt(r.avg_sqm, 1)}}</td>
       <td>${{fmt(r.avg_age, 1)}}</td>
       <td style="color:#666">${{r.vintage || '?'}}</td>
+      <td>${{r.rent ?? '—'}}</td>
+      <td class="${{r.rent_chg == null ? '' : r.rent_chg >= 0 ? 'pos' : 'neg'}}">${{fmt(r.rent_chg, 1, true)}}</td>
+      <td class="${{r.gap == null ? '' : r.gap >= 0 ? 'pos' : 'neg'}}">${{fmt(r.gap, 1, true)}}</td>
       <td>${{r.r_col ?? '—'}}</td>
       <td>${{r.r_fire ?? '—'}}</td>
     </tr>`;

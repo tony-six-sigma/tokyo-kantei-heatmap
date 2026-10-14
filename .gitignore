@@ -30,3 +30,6 @@ kantei.html
 
 # Cached source downloads for fetch_hazards.py (re-fetchable)
 data/raw/
+
+# CARTO basemap key (free, by email); read by build_html.py if present
+data/carto_key.txt

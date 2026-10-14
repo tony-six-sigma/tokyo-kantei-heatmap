@@ -25,6 +25,7 @@ of its line's Kantei report (shown in popup + table).
 │   ├── apply_update.py        # Step 3b: merge transcribed report JSON into analysis.py
 │   ├── build_merged.py        # Step 4: join price data ↔ coords
 │   ├── fetch_hazards.py       # Step 4b: Tokyo 地域危険度 ranks on e-Stat 町丁目 polygons
+│   ├── fetch_rents.py         # Step 4c: SUUMO station rents now vs ~1yr ago (Internet Archive)
 │   └── build_html.py          # Step 5: render Leaflet/HTML dashboard
 ├── data/
 │   ├── urls.txt               # line-report IDs Kantei publishes
@@ -118,6 +119,11 @@ static file alongside the Notion dashboard at `/api/index`).
 - **Min growth (1yr%)**: hide everything below a threshold
 - **Line filter**: isolate one rail line
 - Click a marker for full data popup. Sortable table below the map.
+- **Rent metrics** (Color metric menu): `src/fetch_rents.py` scrapes SUUMO 家賃相場 line pages (マンション ワンルーム,
+  asking rent) and compares each station with an Internet Archive copy from 9–24 months earlier, matched by SUUMO
+  station code and annualised. "Rent − price" = rent change minus Kantei 1-yr price change, only where Kantei's
+  vintage is late 2025 or newer. Each run saves `data/rents/YYYY-MM-DD.json` so our own history builds up.
+  Basemap: drop a free CARTO key in `data/carto_key.txt` (gitignored) to use Voyager; otherwise 地理院タイル.
 - **Hazards** (toggle row under the filters), with an opacity slider and a legend for active layers:
   - **Flood**: river flooding at maximum scale, rainwater (内水) or storm surge (高潮). Live tiles from
     MLIT's ハザードマップポータルサイト (keyless; credit required).

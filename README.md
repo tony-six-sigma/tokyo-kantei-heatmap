@@ -24,10 +24,12 @@ of its line's Kantei report (shown in popup + table).
 │   ├── analysis.py            # Step 3: structured price data (DATA + VINTAGE)
 │   ├── apply_update.py        # Step 3b: merge transcribed report JSON into analysis.py
 │   ├── build_merged.py        # Step 4: join price data ↔ coords
+│   ├── fetch_hazards.py       # Step 4b: Tokyo 地域危険度 ranks on e-Stat 町丁目 polygons
 │   └── build_html.py          # Step 5: render Leaflet/HTML dashboard
 ├── data/
 │   ├── urls.txt               # line-report IDs Kantei publishes
 │   ├── merged.json            # Joined 584-station dataset (built artifact)
+│   ├── tokyo_risk.json        # 5,190 町丁目 with collapse/fire/overall ranks (fetch_hazards.py)
 │   ├── osm_stations.json      # OSM station cache (~1600 nodes, wide bbox)
 │   ├── overpass_query.txt     # Reproduces the OSM query
 │   └── image_urls.tsv         # PNG paths discovered on each report page
@@ -98,7 +100,9 @@ python3 src/fetch_osm_stations.py   # caches OSM coords (~1 MB)
 
 # After editing analysis.DATA or refreshing data/osm_stations.json:
 python3 src/build_merged.py
-python3 src/build_html.py
+python3 src/fetch_hazards.py   # Tokyo risk polygons; downloads cached in data/raw/
+python3 src/build_html.py      # local copy, includes data/picks.json if present
+python3 src/build_html.py --public --out ../path/to/web/kantei.html   # deploy copy, no picks
 
 # Open the result:
 open kantei.html
@@ -114,6 +118,16 @@ static file alongside the Notion dashboard at `/api/index`).
 - **Min growth (1yr%)**: hide everything below a threshold
 - **Line filter**: isolate one rail line
 - Click a marker for full data popup. Sortable table below the map.
+- **Hazards** (toggle row under the filters), with an opacity slider and a legend for active layers:
+  - **Flood**: river flooding at maximum scale, rainwater (内水) or storm surge (高潮). Live tiles from
+    MLIT's ハザードマップポータルサイト (keyless; credit required).
+  - **Earthquake**: Tokyo building-collapse or overall rank per 町丁目, or J-SHIS (NIED) 2024 probability
+    of 震度6弱+ shaking within 30 years via WMS. J-SHIS is near-uniformly high across Tokyo.
+  - **Fire**: Tokyo fire-spread rank per 町丁目.
+  - The Tokyo ranks come from 東京都「地震に関する地域危険度測定調査（第9回, 2022）」(CC BY), ranked 1 to 5
+    relative within Tokyo, drawn on e-Stat 令和2年国勢調査 小地域 boundaries. They cover 東京都 only.
+    Stations inside a ranked 町丁目 also show the ranks in their popup and in the 倒壊/火災 table columns.
+  - Click the map with a Tokyo rank layer on to see that 町丁目's ranks.
 
 ## License
 

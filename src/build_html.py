@@ -45,8 +45,46 @@ for r in rows:
 located = [r for r in rows if r["lat"] is not None]
 print(f"Located: {len(located)}")
 
+# Optional hazard layer: Tokyo 地域危険度 ranks on 町丁目 polygons (src/fetch_hazards.py).
+# Each station inside a 町丁目 gets its building-collapse / fire / overall ranks.
+risk_path = ROOT / "data" / "tokyo_risk.json"
+towns = json.loads(risk_path.read_text(encoding="utf-8"))["towns"] if risk_path.exists() else []
+
+
+def decode(enc):
+    pts, x, y = [], 0, 0
+    for i in range(0, len(enc), 2):
+        x += enc[i]
+        y += enc[i + 1]
+        pts.append((x / 1e5, y / 1e5))
+    return pts
+
+
+def inside(lon, lat, rings):  # even-odd rule across all rings, same as the canvas fill
+    c = False
+    for ring in rings:
+        for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+            if (y1 > lat) != (y2 > lat) and lon < x1 + (lat - y1) * (x2 - x1) / (y2 - y1):
+                c = not c
+    return c
+
+
+boxes = []
+for t in towns:
+    rings = [decode(e) for e in t[4]]
+    xs = [x for r in rings for x, _ in r]
+    ys = [y for r in rings for _, y in r]
+    boxes.append((min(xs), min(ys), max(xs), max(ys), rings, t))
+for r in located:
+    for x0, y0, x1, y1, rings, t in boxes:
+        if x0 <= r["lon"] <= x1 and y0 <= r["lat"] <= y1 and inside(r["lon"], r["lat"], rings):
+            r["town"], r["r_col"], r["r_fire"], r["r_tot"] = t[0], t[1], t[2], t[3]
+            break
+print(f"Tokyo risk: {len(towns)} 町丁目, {sum(1 for r in located if 'town' in r)} stations tagged")
+
 # Embed data as JSON in HTML
 data_json = json.dumps(located, ensure_ascii=False, separators=(',', ':'))
+towns_json = json.dumps(towns, ensure_ascii=False, separators=(',', ':'))
 picks_json = json.dumps(picks, ensure_ascii=False, separators=(',', ':'))
 n_lines = len({r["line"] for r in located})
 
@@ -94,6 +132,17 @@ html = f"""<!DOCTYPE html>
   .table-wrap {{ max-height: 420px; overflow-y: auto; background: #fff; border-top: 1px solid #ddd; }}
   .stats {{ padding: 8px 22px; background: #fff; font-size: 12px; color: #555; border-bottom: 1px solid #ddd; }}
   .pin-tony {{ stroke: #ff6b00; stroke-width: 3; }}
+  .controls.hazards {{ background: #fff; padding-top: 8px; padding-bottom: 8px; }}
+  .controls input[type=checkbox], .controls input[type=range] {{ padding: 0; border: none; vertical-align: middle; }}
+  .controls.hazards label {{ font-weight: 500; cursor: pointer; }}
+  .hz-legend {{ line-height: 1.5; max-width: 230px; }}
+  .hz-legend .sq {{ display: inline-block; width: 14px; height: 12px; vertical-align: middle; margin-right: 6px;
+                     border: 1px solid rgba(0,0,0,0.15); }}
+  .hz-legend .bar {{ height: 10px; margin: 3px 0 1px; border: 1px solid rgba(0,0,0,0.15);
+                      background: linear-gradient(to right, #fbe685 0%, #ffe601 10%, #ffdd00 12%, #ff9900 35%,
+                      #ff8c00 38%, #ff4100 58%, #ff2800 60%, #c50951 82%, #b40068 84%, #b40068 100%); }}
+  .hz-legend .ticks {{ display: flex; justify-content: space-between; font-size: 10px; color: #555; }}
+  .hz-legend + .hz-legend {{ margin-top: 6px; }}
 </style>
 </head>
 <body>
@@ -101,7 +150,8 @@ html = f"""<!DOCTYPE html>
 <header>
   <h1>Tokyo Capital-Gains Heatmap</h1>
   <div class="sub">Kantei 沿線・駅別 data — {len(located)} stations across {n_lines} Tokyo-area lines (updated 2026-08).
-    Color = 1-yr YoY ¥/坪 change. Size = sub-¥100M affordability. Per-station data vintage in popup/table — lines refresh on a ~2yr rotation.</div>
+    Color = 1-yr YoY ¥/坪 change. Size = sub-¥100M affordability. Per-station data vintage in popup/table — lines refresh on a ~2yr rotation.
+    Hazard overlays: MLIT flood maps, J-SHIS earthquake shaking probability, Tokyo 地域危険度 (第9回) ranks; click the map for a 町丁目's ranks.</div>
 </header>
 
 <div class="controls">
@@ -129,6 +179,26 @@ html = f"""<!DOCTYPE html>
   <span id="counter" style="color:#666"></span>
 </div>
 
+<div class="controls hazards">
+  <span><label>Hazards:</label></span>
+  <span><label><input type="checkbox" id="hzFlood"> Flood</label>
+    <select id="hzFloodType">
+      <option value="river">River, max-scale (洪水)</option>
+      <option value="rain">Rainwater (内水)</option>
+      <option value="surge">Storm surge (高潮)</option>
+    </select>
+  </span>
+  <span><label><input type="checkbox" id="hzQuake"> Earthquake</label>
+    <select id="hzQuakeType">
+      <option value="collapse">Building collapse rank (Tokyo)</option>
+      <option value="total">Overall risk rank (Tokyo)</option>
+      <option value="shake">Shaking ≥ 震度6弱 in 30 yrs (J-SHIS)</option>
+    </select>
+  </span>
+  <span><label><input type="checkbox" id="hzFire"> Fire spread rank (Tokyo)</label></span>
+  <span><label for="hzOpacity">Opacity</label> <input type="range" id="hzOpacity" min="20" max="90" value="55" style="width:110px"></span>
+</div>
+
 <div id="map"></div>
 
 <div class="stats" id="stats"></div>
@@ -147,6 +217,8 @@ html = f"""<!DOCTYPE html>
         <th data-sort="avg_sqm">avg㎡</th>
         <th data-sort="avg_age">築年</th>
         <th data-sort="vintage">Data vintage</th>
+        <th data-sort="r_col" title="Tokyo 地域危険度 building collapse rank, 1 low to 5 high">倒壊</th>
+        <th data-sort="r_fire" title="Tokyo 地域危険度 fire spread rank, 1 low to 5 high">火災</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -156,6 +228,7 @@ html = f"""<!DOCTYPE html>
 <script>
 const DATA = {data_json};
 const PICKS = {picks_json};
+const TOWNS = {towns_json};  // [label, collapse rank, fire rank, overall rank, [delta-encoded rings]]
 
 // Color scale (divergent)
 function colorFor(v) {{
@@ -205,6 +278,135 @@ legend.onAdd = function () {{
 }};
 legend.addTo(map);
 
+// Hazard overlays. Raster tiles sit above the basemap, Tokyo rank polygons above the tiles,
+// station markers above both. Rank polygons are non-interactive so clicks reach the map.
+map.createPane('hazardTiles').style.zIndex = 380;
+map.createPane('riskPolys').style.zIndex = 390;
+map.getPane('riskPolys').style.pointerEvents = 'none';
+const $ = id => document.getElementById(id);
+const hzOpacity = () => $('hzOpacity').value / 100;
+const MLIT = '<a href="https://disaportal.gsi.go.jp/" target="_blank" rel="noopener">ハザードマップポータルサイト</a> (国土交通省)';
+const JSHIS_ATTR = '<a href="https://www.j-shis.bosai.go.jp/" target="_blank" rel="noopener">J-SHIS</a> (防災科研, 2024年版)';
+const TOKYO_ATTR = '地域危険度 第9回: <a href="https://www.toshiseibi.metro.tokyo.lg.jp/" target="_blank" rel="noopener">東京都都市整備局</a> (CC BY) · 境界: <a href="https://www.e-stat.go.jp/" target="_blank" rel="noopener">e-Stat</a>';
+const FLOOD = {{ river: '01_flood_l2_shinsuishin_data', rain: '02_naisui_data', surge: '03_hightide_l2_shinsuishin_data' }};
+const RANK_COLORS = ['#ffffcc', '#fed976', '#fd8d3c', '#e31a1c', '#800026'];
+const riskRenderer = L.canvas({{ pane: 'riskPolys' }});
+let floodLayer = null, quakeLayer = null, fireLayer = null, towns = null;
+
+function decodeRing(e) {{
+  const out = []; let x = 0, y = 0;
+  for (let i = 0; i < e.length; i += 2) {{ x += e[i]; y += e[i + 1]; out.push([y / 1e5, x / 1e5]); }}
+  return out;
+}}
+function getTowns() {{
+  if (!towns) towns = TOWNS.map(t => {{
+    const rings = t[4].map(decodeRing), lats = rings.flat().map(p => p[0]), lons = rings.flat().map(p => p[1]);
+    return {{ label: t[0], r: [t[1], t[2], t[3]], rings,
+             box: [Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons)] }};
+  }});
+  return towns;
+}}
+function floodTiles(type) {{
+  return L.tileLayer(`https://disaportaldata.gsi.go.jp/raster/${{FLOOD[type]}}/{{z}}/{{x}}/{{y}}.png`,
+    {{ pane: 'hazardTiles', opacity: hzOpacity(), maxNativeZoom: 17, maxZoom: 18, attribution: MLIT }});
+}}
+function shakeTiles() {{
+  return L.tileLayer.wms('https://www.j-shis.bosai.go.jp/map/wms/pshm/Y2024?', {{
+    layers: 'P-Y2024-MAP-AVR-TTL_MTTL-T30_I55_PS', format: 'image/png', transparent: true, version: '1.3.0',
+    pane: 'hazardTiles', opacity: hzOpacity(), attribution: JSHIS_ATTR }});
+}}
+function rankLayer(idx) {{  // 0 building collapse, 1 fire spread, 2 overall
+  const g = L.layerGroup([], {{ attribution: TOKYO_ATTR }});
+  getTowns().forEach(t => L.polygon(t.rings, {{
+    renderer: riskRenderer, interactive: false, color: '#fff', weight: 0.3,
+    fillColor: RANK_COLORS[t.r[idx] - 1], fillOpacity: hzOpacity() }}).addTo(g));
+  return g;
+}}
+function swap(current, want, make) {{
+  if (current && (!want || current._hz !== want)) {{ map.removeLayer(current); current = null; }}
+  if (want && !current) {{ current = make(want); current._hz = want; current.addTo(map); }}
+  return current;
+}}
+function syncHazards() {{
+  floodLayer = swap(floodLayer, $('hzFlood').checked && $('hzFloodType').value, floodTiles);
+  quakeLayer = swap(quakeLayer, $('hzQuake').checked && $('hzQuakeType').value,
+    t => t === 'shake' ? shakeTiles() : rankLayer(t === 'collapse' ? 0 : 2));
+  fireLayer = swap(fireLayer, $('hzFire').checked && 'fire', () => rankLayer(1));
+  renderHazardLegend();
+}}
+function setOpacity() {{
+  const op = hzOpacity();
+  [floodLayer, quakeLayer, fireLayer].forEach(l => {{
+    if (!l) return;
+    if (l.setOpacity) l.setOpacity(op); else l.eachLayer(p => p.setStyle({{ fillOpacity: op }}));
+  }});
+}}
+const tokyoRankOn = () => ($('hzQuake').checked && $('hzQuakeType').value !== 'shake') || $('hzFire').checked;
+
+// One Tokyo rank layer at a time (they share the 町丁目 polygons). Picking a type turns its layer on.
+$('hzFlood').addEventListener('change', syncHazards);
+$('hzFloodType').addEventListener('change', () => {{ $('hzFlood').checked = true; syncHazards(); }});
+['hzQuake', 'hzQuakeType'].forEach(id => $(id).addEventListener('change', () => {{
+  if (id === 'hzQuakeType') $('hzQuake').checked = true;
+  if ($('hzQuake').checked && $('hzQuakeType').value !== 'shake') $('hzFire').checked = false;
+  syncHazards();
+}}));
+$('hzFire').addEventListener('change', () => {{
+  if ($('hzFire').checked && $('hzQuakeType').value !== 'shake') $('hzQuake').checked = false;
+  syncHazards();
+}});
+$('hzOpacity').addEventListener('input', setOpacity);
+
+// Hazard legend (bottom-left), rebuilt for whichever layers are on
+const hzLegend = L.control({{ position: 'bottomleft' }});
+hzLegend.onAdd = () => {{ const d = L.DomUtil.create('div', 'legend'); d.id = 'hzLegend'; d.style.display = 'none'; return d; }};
+hzLegend.addTo(map);
+function renderHazardLegend() {{
+  const parts = [], sq = c => `<span class="sq" style="background:${{c}}"></span>`;
+  if (floodLayer) {{
+    const t = {{ river: 'River flood depth (max scale)', rain: 'Rainwater flood depth (内水)', surge: 'Storm-surge depth (高潮)' }}[floodLayer._hz];
+    parts.push(`<div class="hz-legend"><b>${{t}}</b><br>` +
+      [['#dc7adc', '20m+'], ['#f285c9', '10–20m'], ['#ff9191', '5–10m'], ['#ffb7b7', '3–5m'], ['#ffd8c0', '0.5–3m'], ['#f7f5a9', 'under 0.5m']]
+        .map(([c, l]) => `${{sq(c)}}${{l}}`).join('<br>') +
+      `<div style="color:#777;font-size:10px">Lighter sub-shades mark the 0.3m and 1m bands. Rainwater maps exist only where cities published them.</div></div>`);
+  }}
+  if (quakeLayer && quakeLayer._hz === 'shake') {{
+    parts.push(`<div class="hz-legend"><b>Chance of 震度6弱+ shaking within 30 yrs</b><div class="bar"></div>
+      <div class="ticks"><span>0</span><span>0.1</span><span>3</span><span>6</span><span>26</span><span>100%</span></div></div>`);
+  }}
+  const rankOn = [quakeLayer && quakeLayer._hz !== 'shake' && (quakeLayer._hz === 'collapse' ? 'Building collapse' : 'Overall'),
+                  fireLayer && 'Fire spread'].filter(Boolean);
+  if (rankOn.length) {{
+    parts.push(`<div class="hz-legend"><b>${{rankOn.join(' / ')}} rank (Tokyo 町丁目)</b><br>` +
+      RANK_COLORS.map((c, i) => `${{sq(c)}}${{i + 1}}${{i === 0 ? ' lowest' : i === 4 ? ' highest' : ''}}`).reverse().join('<br>') +
+      `<div style="color:#777;font-size:10px">Relative within Tokyo; no data outside 東京都 or in 市街化調整区域.</div></div>`);
+  }}
+  const d = $('hzLegend'); d.innerHTML = parts.join(''); d.style.display = parts.length ? '' : 'none';
+}}
+
+// Click the map with a Tokyo rank layer on to see that 町丁目's ranks
+const hzInfo = L.control({{ position: 'topright' }});
+hzInfo.onAdd = () => {{ const d = L.DomUtil.create('div', 'legend'); d.id = 'hzInfo'; d.style.display = 'none'; return d; }};
+hzInfo.addTo(map);
+function townAt(lat, lon) {{
+  return getTowns().find(t => lat >= t.box[0] && lon >= t.box[1] && lat <= t.box[2] && lon <= t.box[3] &&
+    t.rings.reduce((c, ring) => {{
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {{
+        const [yi, xi] = ring[i], [yj, xj] = ring[j];
+        if ((yi > lat) !== (yj > lat) && lon < xi + (lat - yi) * (xj - xi) / (yj - yi)) c = !c;
+      }}
+      return c;
+    }}, false));
+}}
+map.on('click', e => {{
+  const d = $('hzInfo');
+  if (!tokyoRankOn()) {{ d.style.display = 'none'; return; }}
+  const t = townAt(e.latlng.lat, e.latlng.lng);
+  d.innerHTML = t ? `<b>${{t.label}}</b><br>Building collapse ${{t.r[0]}}/5 · Fire ${{t.r[1]}}/5 · Overall ${{t.r[2]}}/5`
+                  : 'No Tokyo 地域危険度 data here';
+  d.style.display = '';
+}});
+
 // Markers layer
 let markerLayer = L.layerGroup().addTo(map);
 
@@ -247,6 +449,11 @@ function popup(r) {{
     <div class="row"><span>avg unit ㎡</span>${{fmt(r.avg_sqm, 1)}}</div>
     <div class="row"><span>avg 築年</span>${{fmt(r.avg_age, 1)}} yr</div>
     <div class="row"><span>data vintage</span><span style="color:#666">${{r.vintage || '?'}}</span></div>
+    ${{r.town ? `<hr style="margin:6px 0;border:none;border-top:1px solid #eee">
+    <div style="color:#666;font-size:11px">Tokyo 地域危険度 · ${{r.town}} (1 low, 5 high)</div>
+    <div class="row"><span>Building collapse</span><b>${{r.r_col}}/5</b></div>
+    <div class="row"><span>Fire spread</span><b>${{r.r_fire}}/5</b></div>
+    <div class="row"><span>Overall</span><b>${{r.r_tot}}/5</b></div>` : ''}}
   </div>`;
 }}
 
@@ -318,6 +525,8 @@ function renderTable(rows) {{
       <td>${{fmt(r.avg_sqm, 1)}}</td>
       <td>${{fmt(r.avg_age, 1)}}</td>
       <td style="color:#666">${{r.vintage || '?'}}</td>
+      <td>${{r.r_col ?? '—'}}</td>
+      <td>${{r.r_fire ?? '—'}}</td>
     </tr>`;
   }}).join('');
 

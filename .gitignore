@@ -27,3 +27,6 @@ data/picks.json
 # Built artifact (varies based on whether picks.json is present locally).
 # Rebuild with `python3 src/build_html.py`.
 kantei.html
+
+# Cached source downloads for fetch_hazards.py (re-fetchable)
+data/raw/

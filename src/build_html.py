@@ -4,10 +4,17 @@ Reads data/merged.json (Kantei rows + OSM coords) and writes kantei.html
 to the repo root. The output is a single self-contained HTML file with
 embedded data — no runtime data fetching needed.
 """
+import argparse
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+ap = argparse.ArgumentParser(description="Build the Kantei heatmap HTML.")
+ap.add_argument("--public", action="store_true",
+                help="ignore data/picks.json (use for the public deploy copy)")
+ap.add_argument("--out", type=Path, default=ROOT / "kantei.html", help="output path")
+args = ap.parse_args()
 
 # Load merged dataset
 with (ROOT / "data" / "merged.json").open(encoding="utf-8") as f:
@@ -17,7 +24,7 @@ with (ROOT / "data" / "merged.json").open(encoding="utf-8") as f:
 # orange rings on top of the heatmap. The file is gitignored — picks stay
 # local. See data/picks.example.json for the schema.
 picks_path = ROOT / "data" / "picks.json"
-picks = json.loads(picks_path.read_text(encoding="utf-8")) if picks_path.exists() else []
+picks = json.loads(picks_path.read_text(encoding="utf-8")) if picks_path.exists() and not args.public else []
 
 # Patch the 6 unmatched coords manually
 manual_coords = {
@@ -172,11 +179,13 @@ function radiusFor(p_now) {{
   return 4;
 }}
 
-// Init map (CartoDB Voyager — works from file:// and any host, no Referer restriction)
-const map = L.map('map', {{ preferCanvas: true }}).setView([35.685, 139.71], 11);
-L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png', {{
-  attribution: '© OpenStreetMap contributors © CARTO',
-  subdomains: 'abcd', maxZoom: 19
+// Init map. Basemap: 国土地理院 淡色地図, keyless (credit only, no application for real-time use:
+// https://maps.gsi.go.jp/development/ichiran.html). CARTO now requires an API key and watermarks
+// keyless tiles. Zoom 9-18 stays in the range where the 地理院タイル credit alone is enough.
+const map = L.map('map', {{ preferCanvas: true, minZoom: 9, maxZoom: 18 }}).setView([35.685, 139.71], 11);
+L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{{z}}/{{x}}/{{y}}.png', {{
+  attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a> (国土地理院)',
+  minZoom: 9, maxZoom: 18
 }}).addTo(map);
 
 // Legend
@@ -346,6 +355,6 @@ refresh();
 </html>
 """
 
-out_path = ROOT / "kantei.html"
+out_path = args.out
 out_path.write_text(html, encoding="utf-8")
 print(f"Wrote {out_path} ({len(html)//1024} KB)")
